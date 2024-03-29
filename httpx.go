@@ -67,9 +67,17 @@ func (f HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func wrap(handler http.Handler, middlewares ...MiddlewareFunc) http.Handler {
+	for _, mid := range middlewares {
+		handler = mid(handler)
+	}
+	return handler
+}
+
 type ServeMux struct {
 	*http.ServeMux
 	middlewares []MiddlewareFunc
+	handler     http.Handler
 }
 
 func NewServeMux() *ServeMux {
@@ -82,20 +90,23 @@ func NewServeMux() *ServeMux {
 func (mux *ServeMux) Use(middlewares ...MiddlewareFunc) {
 	mux.middlewares = append(mux.middlewares, middlewares...)
 }
-func (mux *ServeMux) wrap(handler http.Handler, middlewares ...MiddlewareFunc) http.Handler {
-	for _, mid := range append(mux.middlewares, middlewares...) {
-		handler = mid(handler)
-	}
-	return handler
-}
 
 func (mux *ServeMux) Handle(pattern string, handler http.Handler, middlewares ...MiddlewareFunc) {
-	mux.ServeMux.Handle(pattern, mux.wrap(handler))
+	mux.ServeMux.Handle(pattern, wrap(handler, middlewares...))
 }
 func (mux *ServeMux) HandleFunc(pattern string, handler http.HandlerFunc, middlewares ...MiddlewareFunc) {
-	mux.ServeMux.Handle(pattern, mux.wrap(handler))
+	mux.ServeMux.Handle(pattern, wrap(handler, middlewares...))
 }
 
 func (mux *ServeMux) Handlex(pattern string, handler HandlerFunc, middlewares ...MiddlewareFunc) {
-	mux.ServeMux.Handle(pattern, mux.wrap(handler))
+	mux.ServeMux.Handle(pattern, wrap(handler, middlewares...))
+}
+func (mux *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if mux.handler == nil {
+		mux.handler = mux.ServeMux
+		for _, mid := range mux.middlewares {
+			mux.handler = mid(mux.handler)
+		}
+	}
+	mux.handler.ServeHTTP(w, r)
 }
