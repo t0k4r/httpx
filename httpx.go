@@ -1,19 +1,43 @@
 package httpx
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 )
+
+var ErrHandler ErrHandlerFunc = defaultErrHandler
+
+func defaultErrHandler(w http.ResponseWriter, r *http.Request, err error) {
+	if err != nil {
+		slog.Error(err.Error(), "path", r.URL.Path)
+		http.Error(w, err.Error(), 500)
+	}
+}
+
+func HtmlTempl(w http.ResponseWriter, templ *template.Template, data any, code int) error {
+	w.WriteHeader(code)
+	w.Header().Set("Content-Type", "text/html")
+	err := templ.Execute(w, data)
+	return err
+}
+
+func Html(w http.ResponseWriter, html string, code int) error {
+	w.WriteHeader(code)
+	w.Header().Set("Content-Type", "text/html")
+	_, err := fmt.Fprint(w, html)
+	return err
+
+}
 
 func Error(w http.ResponseWriter, err error, code int) error {
 	http.Error(w, err.Error(), code)
 	return nil
 }
 
-func Empty(w http.ResponseWriter, code int) error {
+func NoContent(w http.ResponseWriter, code int) error {
 	w.WriteHeader(code)
 	return nil
 }
@@ -24,7 +48,6 @@ func Json(w http.ResponseWriter, v any, code int) error {
 }
 func JsonMany[T any](w http.ResponseWriter, v []T, code int) error {
 	w.Header().Set("Content-Type", "application/json")
-
 	w.WriteHeader(code)
 	switch len(v) {
 	case 0:
@@ -34,37 +57,15 @@ func JsonMany[T any](w http.ResponseWriter, v []T, code int) error {
 		return json.NewEncoder(w).Encode(v)
 	}
 }
-func JsonSql(w http.ResponseWriter, v any, err error, code int) error {
-	switch err {
-	case nil:
-		return Json(w, v, code)
-	case sql.ErrNoRows:
-		return Empty(w, 404)
-	default:
-		return err
-	}
-}
-func JsonSqlMany[T any](w http.ResponseWriter, v []T, err error, code int) error {
-	switch err {
-	case nil:
-		return JsonMany(w, v, code)
-	case sql.ErrNoRows:
-		return Empty(w, 404)
-	default:
-		return err
-	}
-}
+
+type ErrHandlerFunc func(http.ResponseWriter, *http.Request, error)
 
 type HandlerFunc func(http.ResponseWriter, *http.Request) error
 
 type MiddlewareFunc func(http.Handler) http.Handler
 
 func (f HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	err := f(w, r)
-	if err != nil {
-		slog.Error(err.Error(), "type", "error", "parh", r.URL.Path)
-		http.Error(w, err.Error(), 500)
-	}
+	ErrHandler(w, r, f(w, r))
 }
 
 func wrap(handler http.Handler, middlewares ...MiddlewareFunc) http.Handler {
@@ -76,19 +77,16 @@ func wrap(handler http.Handler, middlewares ...MiddlewareFunc) http.Handler {
 
 type ServeMux struct {
 	*http.ServeMux
-	middlewares []MiddlewareFunc
-	handler     http.Handler
 }
 
 func NewServeMux() *ServeMux {
 	return &ServeMux{
-		ServeMux:    &http.ServeMux{},
-		middlewares: []MiddlewareFunc{},
+		ServeMux: &http.ServeMux{},
 	}
 }
 
-func (mux *ServeMux) Use(middlewares ...MiddlewareFunc) {
-	mux.middlewares = append(mux.middlewares, middlewares...)
+func (mux *ServeMux) With(middlewares ...MiddlewareFunc) http.Handler {
+	return wrap(mux.ServeMux, middlewares...)
 }
 
 func (mux *ServeMux) Handle(pattern string, handler http.Handler, middlewares ...MiddlewareFunc) {
@@ -100,13 +98,4 @@ func (mux *ServeMux) HandleFunc(pattern string, handler http.HandlerFunc, middle
 
 func (mux *ServeMux) Handlex(pattern string, handler HandlerFunc, middlewares ...MiddlewareFunc) {
 	mux.ServeMux.Handle(pattern, wrap(handler, middlewares...))
-}
-func (mux *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if mux.handler == nil {
-		mux.handler = mux.ServeMux
-		for _, mid := range mux.middlewares {
-			mux.handler = mid(mux.handler)
-		}
-	}
-	mux.handler.ServeHTTP(w, r)
 }
